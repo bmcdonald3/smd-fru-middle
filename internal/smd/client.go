@@ -1,5 +1,4 @@
 package smd
-package smd
 
 import (
 	"bytes"

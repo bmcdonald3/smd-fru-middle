@@ -1,5 +1,4 @@
 package secretsruntime
-package secretsruntime
 
 import (
 	"fmt"

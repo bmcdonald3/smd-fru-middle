@@ -2,8 +2,10 @@ package fru
 
 import (
 	"context"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -43,31 +45,45 @@ func (c *Client) ListDevices(ctx context.Context) ([]models.Device, error) {
 		return nil, fmt.Errorf("unexpected FRU response status: %s", resp.Status)
 	}
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read FRU response: %w", err)
+	}
+
+	devices, err := decodeDevices(body)
+	if err != nil {
+		return nil, err
+	}
+
+	return devices, nil
+}
+
+func decodeDevices(body []byte) ([]models.Device, error) {
 	var envelope struct {
 		Items   []models.Device `json:"items"`
 		Devices []models.Device `json:"devices"`
 		Data    []models.Device `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return nil, fmt.Errorf("decode FRU response: %w", err)
-	}
 
-	devices := envelope.Items
-	if len(devices) == 0 {
-		devices = envelope.Devices
-	}
-	if len(devices) == 0 {
-		devices = envelope.Data
-	}
-
-	if len(devices) == 0 {
-		// Some endpoints return a bare array; retry decode if envelope is empty.
-		if err := c.decodeBareArray(ctx, url, &devices); err != nil {
-			return nil, err
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&envelope); err == nil {
+		devices := envelope.Items
+		if len(devices) == 0 {
+			devices = envelope.Devices
+		}
+		if len(devices) == 0 {
+			devices = envelope.Data
+		}
+		if len(devices) > 0 {
+			return devices, nil
 		}
 	}
 
-	return devices, nil
+	var bare []models.Device
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&bare); err == nil {
+		return bare, nil
+	}
+
+	return nil, fmt.Errorf("decode FRU response: unsupported JSON shape")
 }
 
 func (c *Client) decodeBareArray(ctx context.Context, url string, out *[]models.Device) error {
