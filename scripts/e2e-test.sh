@@ -20,8 +20,8 @@ SECRET_ID="${SECRET_ID:-bmc-x3000c0s17b0}"
 
 WORK_DIR="$(mktemp -d /tmp/smd-fru-middle-e2e.XXXXXX)"
 PG_CONTAINER="smd-fru-middle-pg-$$"
-CHECKPOINT_PATH="$ROOT_DIR/data/checkpoint.json"
-SECRETS_FILE="$ROOT_DIR/secrets.json"
+CHECKPOINT_PATH="$WORK_DIR/checkpoint.json"
+SECRETS_FILE="$WORK_DIR/secrets.json"
 FRU_DB_URL="file:$WORK_DIR/fru-tracker-e2e.db?cache=shared&_fk=1"
 
 SMD_BIN="$WORK_DIR/smd-local"
@@ -43,6 +43,7 @@ SMD_INIT_LOG="$WORK_DIR/smd-init.log"
 
 REDFISH_RESP="$WORK_DIR/redfish_endpoints.json"
 COMP_RESP="$WORK_DIR/component_endpoints.json"
+COMP_NODE_DETAIL_RESP="$WORK_DIR/component_endpoint_node_detail.json"
 
 require_cmd() {
   local cmd="$1"
@@ -130,7 +131,6 @@ cleanup() {
   clear_port_listeners "$SMD_PORT"
   clear_port_listeners "$FRU_PORT"
   clear_port_listeners "$REDFISH_PORT"
-  clear_port_listeners "$PG_PORT"
   docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
   echo ""
   echo "Logs and artifacts kept in: $WORK_DIR"
@@ -163,7 +163,7 @@ wait_for_contains() {
   for _ in $(seq 1 "$max_tries"); do
     local out
     out="$(curl -fsS "$url" || true)"
-    if [[ -n "$out" ]] && grep -q "$token" <<<"$out"; then
+    if [[ -n "$out" ]] && grep -Fq "$token" <<<"$out"; then
       printf '%s\n' "$out" > "$out_file"
       return 0
     fi
@@ -172,6 +172,21 @@ wait_for_contains() {
 
   echo "ERROR: timed out waiting for token '$token' from $url" >&2
   return 1
+}
+
+assert_file_contains() {
+  local file="$1"
+  local token="$2"
+  local description="$3"
+
+  if ! grep -Fq "$token" "$file"; then
+    echo "ERROR: assertion failed: $description" >&2
+    echo "ERROR: missing token: $token" >&2
+    echo "ERROR: inspected file: $file" >&2
+    echo "--- file contents ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
 }
 
 echo "==> Validating prerequisites"
@@ -194,16 +209,13 @@ clear_port_listeners "$FRU_PORT"
 clear_port_listeners "$REDFISH_PORT"
 
 if is_port_in_use "$PG_PORT"; then
-  clear_port_listeners "$PG_PORT"
-  if is_port_in_use "$PG_PORT"; then
-    alt_pg_port="$(pick_free_port 15432 25432 35432 45432 55432 65432 || true)"
-    if [[ -z "$alt_pg_port" ]]; then
-      echo "ERROR: PostgreSQL host port $PG_PORT is in use and no fallback port was available." >&2
-      exit 1
-    fi
-    echo "INFO: port $PG_PORT is still in use; switching PostgreSQL host port to $alt_pg_port"
-    PG_PORT="$alt_pg_port"
+  alt_pg_port="$(pick_free_port 15432 25432 35432 45432 55432 65432 || true)"
+  if [[ -z "$alt_pg_port" ]]; then
+    echo "ERROR: PostgreSQL host port $PG_PORT is in use and no fallback port was available." >&2
+    exit 1
   fi
+  echo "INFO: PostgreSQL host port $PG_PORT is in use; switching to $alt_pg_port"
+  PG_PORT="$alt_pg_port"
 fi
 
 check_port_free "$SMD_PORT"
@@ -312,10 +324,76 @@ func main() {
       "Members@odata.count": 1,
     })
   })
+  mux.HandleFunc("/redfish/v1/Systems/System-1", func(w http.ResponseWriter, r *http.Request) {
+    writeJSON(w, map[string]any{
+      "@odata.id": "/redfish/v1/Systems/System-1",
+      "UUID": "317091ec-8be6-11e8-ab21-a4bf013f6b40",
+      "Manufacturer": "Intel Corporation",
+      "SystemType": "Physical",
+      "Name": "S2600BPB",
+      "Model": "S2600BPB",
+      "SerialNumber": "QSBP82909087",
+      "BiosVersion": "SE5C620.86B.02.01.0014.C0001.082620210524",
+      "PowerState": "On",
+      "ProcessorSummary": map[string]any{
+        "Count": 2,
+        "Model": "Intel Xeon processor",
+      },
+      "MemorySummary": map[string]any{
+        "TotalSystemMemoryGiB": 64,
+      },
+      "Links": map[string]any{
+        "Managers": []any{map[string]any{"@odata.id": "/redfish/v1/Managers/BMC-1"}},
+      },
+      "Actions": map[string]any{
+        "#ComputerSystem.Reset": map[string]any{
+          "target": "/redfish/v1/Systems/System-1/Actions/ComputerSystem.Reset",
+          "@Redfish.ActionInfo": "/redfish/v1/Systems/System-1/ResetActionInfo",
+        },
+      },
+      "EthernetInterfaces": map[string]any{"@odata.id": "/redfish/v1/Systems/System-1/EthernetInterfaces"},
+    })
+  })
+  mux.HandleFunc("/redfish/v1/Systems/System-1/EthernetInterfaces", func(w http.ResponseWriter, r *http.Request) {
+    writeJSON(w, map[string]any{
+      "Members": []any{
+        map[string]any{"@odata.id": "/redfish/v1/Systems/System-1/EthernetInterfaces/1"},
+        map[string]any{"@odata.id": "/redfish/v1/Systems/System-1/EthernetInterfaces/2"},
+      },
+      "Members@odata.count": 2,
+    })
+  })
+  mux.HandleFunc("/redfish/v1/Systems/System-1/EthernetInterfaces/1", func(w http.ResponseWriter, r *http.Request) {
+    writeJSON(w, map[string]any{
+      "@odata.id": "/redfish/v1/Systems/System-1/EthernetInterfaces/1",
+      "MACAddress": "a4-bf-01-3f-6b-40",
+      "Name": "Computer System Ethernet Interface",
+      "Description": "System NIC 1",
+      "LinkStatus": "LinkUp",
+      "IPv4Addresses": []any{map[string]any{"Address": "192.0.2.10"}},
+    })
+  })
+  mux.HandleFunc("/redfish/v1/Systems/System-1/EthernetInterfaces/2", func(w http.ResponseWriter, r *http.Request) {
+    writeJSON(w, map[string]any{
+      "@odata.id": "/redfish/v1/Systems/System-1/EthernetInterfaces/2",
+      "MACAddress": "a4-bf-01-3f-6b-41",
+      "Name": "Computer System Ethernet Interface",
+      "Description": "System NIC 2",
+      "LinkStatus": "LinkUp",
+      "IPv4Addresses": []any{map[string]any{"Address": "192.0.2.11"}},
+    })
+  })
   mux.HandleFunc("/redfish/v1/Managers", func(w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{
       "Members": []any{map[string]any{"@odata.id": "/redfish/v1/Managers/BMC-1"}},
       "Members@odata.count": 1,
+    })
+  })
+  mux.HandleFunc("/redfish/v1/Managers/BMC-1", func(w http.ResponseWriter, r *http.Request) {
+    writeJSON(w, map[string]any{
+      "@odata.id": "/redfish/v1/Managers/BMC-1",
+      "ManagerType": "BMC",
+      "Name": "BMC-1",
     })
   })
 
@@ -385,6 +463,18 @@ MIDDLE_PID=$!
 
 wait_for_contains "http://localhost:$SMD_PORT/hsm/v2/Inventory/RedfishEndpoints" "$XNAME" "$REDFISH_RESP" 120 1
 wait_for_contains "http://localhost:$SMD_PORT/hsm/v2/Inventory/ComponentEndpoints" "$XNAME" "$COMP_RESP" 120 1
+wait_for_contains "http://localhost:$SMD_PORT/hsm/v2/Inventory/ComponentEndpoints/${XNAME}n0" '"ID":"' "$COMP_NODE_DETAIL_RESP" 120 1
+
+echo "==> Validating enriched fields"
+assert_file_contains "$COMP_RESP" '"RedfishType":"ComputerSystem"' "computer system component endpoint created"
+assert_file_contains "$COMP_RESP" '"OdataID":"/redfish/v1/Systems/System-1"' "component endpoint links to discovered system"
+assert_file_contains "$COMP_NODE_DETAIL_RESP" '"UUID":"317091ec-8be6-11e8-ab21-a4bf013f6b40"' "system UUID persisted"
+assert_file_contains "$COMP_NODE_DETAIL_RESP" '"RedfishSubtype":"Physical"' "system subtype persisted"
+assert_file_contains "$COMP_NODE_DETAIL_RESP" '"Name":"S2600BPB"' "system name persisted"
+assert_file_contains "$COMP_NODE_DETAIL_RESP" '"ResetType@Redfish.AllowableValues":["ComputerSystem.Reset"]' "actions persisted"
+assert_file_contains "$COMP_NODE_DETAIL_RESP" '"EthernetNICInfo"' "ethernet nic info persisted"
+assert_file_contains "$COMP_NODE_DETAIL_RESP" '"MACAddress":"a4-bf-01-3f-6b-40"' "first ethernet NIC persisted"
+assert_file_contains "$COMP_NODE_DETAIL_RESP" '"MACAddress":"a4-bf-01-3f-6b-41"' "second ethernet NIC persisted"
 
 echo ""
 echo "PASS: End-to-end FRU -> middleware -> SMD test succeeded"
@@ -394,6 +484,9 @@ cat "$REDFISH_RESP"
 echo ""
 echo "--- ComponentEndpoints ---"
 cat "$COMP_RESP"
+echo ""
+echo "--- ComponentEndpoint Node Detail ---"
+cat "$COMP_NODE_DETAIL_RESP"
 echo ""
 echo "Log files:"
 echo "  SMD:      $SMD_LOG"

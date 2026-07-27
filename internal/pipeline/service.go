@@ -133,6 +133,9 @@ func (s *Service) candidateFromDevice(device models.Device) (models.Candidate, b
 		XName:          xname,
 		SecretID:       secretID,
 		RedfishAddress: redfishAddr,
+		Manufacturer:   strings.TrimSpace(device.Spec.Manufacturer),
+		PartNumber:     strings.TrimSpace(device.Spec.PartNumber),
+		SerialNumber:   strings.TrimSpace(device.Spec.SerialNumber),
 	}, true
 }
 
@@ -167,6 +170,20 @@ func (s *Service) processCandidate(ctx context.Context, candidate models.Candida
 		systems, managers, discoverErr := s.redfish.Discover(ctx, candidate.RedfishAddress, creds)
 		if discoverErr != nil {
 			return fmt.Errorf("redfish discovery failed for %q: %w", candidate.XName, discoverErr)
+		}
+		for i := range systems {
+			if strings.TrimSpace(systems[i].Manufacturer) == "" {
+				systems[i].Manufacturer = candidate.Manufacturer
+			}
+			if strings.TrimSpace(systems[i].Serial) == "" {
+				systems[i].Serial = candidate.SerialNumber
+			}
+			if strings.TrimSpace(systems[i].Model) == "" {
+				systems[i].Model = candidate.PartNumber
+			}
+			if strings.TrimSpace(systems[i].Name) == "" {
+				systems[i].Name = systems[i].Model
+			}
 		}
 		payload.Systems = systems
 		payload.Managers = managers
