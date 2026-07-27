@@ -56,6 +56,41 @@ go run ./cmd/server
 
 Set `FRU_MIDDLE_DRY_RUN=false` to enable SMD writes.
 
+## One-Command E2E Script
+
+Run the full FRU -> middleware -> SMD validation with one command:
+
+```bash
+./scripts/e2e-test.sh
+```
+
+What it does automatically:
+
+- Starts a temporary PostgreSQL Docker container for SMD
+- Clears stale listeners on the test ports (`SMD_PORT`, `FRU_PORT`, `REDFISH_PORT`) from previous runs
+- Builds and starts SMD
+- Builds and starts FRU-tracker
+- Starts a local Redfish mock endpoint
+- Seeds middleware secret credentials
+- Posts a DiscoverySnapshot to FRU-tracker
+- Starts middleware in write mode
+- Verifies `RedfishEndpoints` and `ComponentEndpoints` in SMD
+- Prints actual query responses and log file locations
+- Cleans up all started processes/container on exit
+
+Optional environment overrides:
+
+- `SMD_DIR` (default: `/Users/benmcdonald/smd`)
+- `FRU_DIR` (default: `/Users/benmcdonald/fru-tracker`)
+- `SMD_PORT`, `FRU_PORT`, `REDFISH_PORT`
+- `PG_PORT` (if busy, script auto-falls back to a free port)
+- `MASTER_KEY`
+
+Notes:
+
+- The script assumes any listeners already bound to the test ports are stale from prior test runs and will terminate them.
+- Test artifacts and logs are written to a temp directory and printed at the end of each run.
+
 ## End-to-End Test (Exact Commands Used)
 
 This section records the exact commands used in a successful FRU -> middleware -> SMD run on 2026-07-23.
@@ -87,7 +122,7 @@ SMD_DBPASS=hmsdsuser /tmp/smd-init-local \
   -dbname hmsds \
   -dbuser hmsdsuser \
   -dbopts 'sslmode=disable' \
-  -migrationsdir /Users/benmcdonald/smd/migrations
+  -migrationsdir /Users/benmcdonald/smd/migrations/postgres
 ```
 
 Start SMD server:
