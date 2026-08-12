@@ -2,6 +2,7 @@ package redfish
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -18,8 +19,14 @@ type Client struct {
 	http *http.Client
 }
 
-func NewClient(timeout time.Duration) *Client {
-	return &Client{http: &http.Client{Timeout: timeout}}
+func NewClient(timeout time.Duration, insecureTLS bool) *Client {
+	transport := http.DefaultTransport
+	if insecureTLS {
+		transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+		}
+	}
+	return &Client{http: &http.Client{Timeout: timeout, Transport: transport}}
 }
 
 func (c *Client) Discover(ctx context.Context, baseAddress string, creds models.Credentials) ([]models.System, []models.Manager, error) {

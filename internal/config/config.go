@@ -28,6 +28,7 @@ type Config struct {
 	SecretIDPropertyKey string
 	RedfishAddrKey      string
 	DryRun              bool
+	InsecureTLS         bool
 }
 
 func Load() (Config, error) {
@@ -58,6 +59,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.DryRun = dryRun
+
+	insecureTLS, err := parseBoolOrDefault("FRU_MIDDLE_INSECURE_TLS", false)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.InsecureTLS = insecureTLS
 
 	if strings.TrimSpace(cfg.FRUBaseURL) == "" {
 		return Config{}, fmt.Errorf("FRU_MIDDLE_FRU_BASE_URL must not be empty")
