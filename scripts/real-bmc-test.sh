@@ -268,10 +268,10 @@ go run ./cmd/server >"$MIDDLE_LOG" 2>&1 &
 MIDDLE_PID=$!
 
 echo "==> Waiting for RedfishEndpoint to appear in SMD (up to 2 min)..."
-wait_for_contains "http://localhost:$SMD_PORT/hsm/v2/Inventory/RedfishEndpoints" "$XNAME" "$REDFISH_RESP" 120 2
+wait_for_contains "https://localhost:$SMD_PORT/hsm/v2/Inventory/RedfishEndpoints" "$XNAME" "$REDFISH_RESP" 120 2
 
 echo "==> Waiting for ComponentEndpoints to appear in SMD (up to 2 min)..."
-wait_for_contains "http://localhost:$SMD_PORT/hsm/v2/Inventory/ComponentEndpoints" "$XNAME" "$COMP_RESP" 120 2
+wait_for_contains "https://localhost:$SMD_PORT/hsm/v2/Inventory/ComponentEndpoints" "$XNAME" "$COMP_RESP" 120 2
 
 echo ""
 echo "==> Validating results"
