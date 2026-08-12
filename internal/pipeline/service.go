@@ -31,7 +31,7 @@ func NewService(cfg config.Config) *Service {
 		cfg:        cfg,
 		fruClient:  fru.NewClient(cfg.FRUBaseURL, cfg.HTTPTimeout),
 		redfish:    redfish.NewClient(cfg.HTTPTimeout, cfg.InsecureTLS),
-		smdClient:  smd.NewClient(cfg.SMDBaseURL, cfg.HTTPTimeout),
+		smdClient:  smd.NewClient(cfg.SMDBaseURL, cfg.HTTPTimeout, cfg.InsecureTLS),
 		checkpoint: checkpoint.New(cfg.CheckpointPath),
 	}
 }
