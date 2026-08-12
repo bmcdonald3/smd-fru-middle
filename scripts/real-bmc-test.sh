@@ -197,8 +197,8 @@ docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null 2>&1
 }
 
 echo "==> Building SMD and FRU-tracker binaries"
-(cd "$SMD_DIR" && go build -o "$SMD_BIN" ./cmd/smd && go build -o "$SMD_INIT_BIN" ./cmd/smd-init)
-(cd "$FRU_DIR" && go build -o "$FRU_BIN" ./cmd/server)
+(cd "$SMD_DIR" && GOTOOLCHAIN=local go build -o "$SMD_BIN" ./cmd/smd && GOTOOLCHAIN=local go build -o "$SMD_INIT_BIN" ./cmd/smd-init)
+(cd "$FRU_DIR" && GOTOOLCHAIN=local go build -o "$FRU_BIN" ./cmd/server)
 
 echo "==> Initializing SMD schema"
 SMD_DBPASS="$PG_PASS" "$SMD_INIT_BIN" \
