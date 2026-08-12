@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -51,7 +52,8 @@ func (c *Client) UpsertRedfishEndpoint(ctx context.Context, payload models.SMDRe
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("SMD upsert returned status %s", resp.Status)
+		rbody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("SMD upsert returned status %s: %s", resp.Status, strings.TrimSpace(string(rbody)))
 	}
 
 	return nil
