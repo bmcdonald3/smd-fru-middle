@@ -228,6 +228,9 @@ func (c *Client) discoverEthernetInterfaces(ctx context.Context, rootURL, collec
 		if err != nil {
 			continue
 		}
+		if iface.IP == "" {
+			continue
+		}
 		ifaces = append(ifaces, iface)
 	}
 
