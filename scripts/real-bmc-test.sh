@@ -118,7 +118,7 @@ trap cleanup EXIT
 wait_for_http() {
   local url="$1" max_tries="${2:-60}" sleep_secs="${3:-1}"
   for _ in $(seq 1 "$max_tries"); do
-    curl -fsS "$url" >/dev/null 2>&1 && return 0
+    curl -fsSk "$url" >/dev/null 2>&1 && return 0
     sleep "$sleep_secs"
   done
   echo "ERROR: timed out waiting for $url" >&2
@@ -129,7 +129,7 @@ wait_for_contains() {
   local url="$1" token="$2" out_file="$3" max_tries="${4:-120}" sleep_secs="${5:-1}"
   for _ in $(seq 1 "$max_tries"); do
     local out
-    out="$(curl -fsS "$url" || true)"
+    out="$(curl -fsSk "$url" || true)"
     if [[ -n "$out" ]] && grep -Fq "$token" <<<"$out"; then
       printf '%s\n' "$out" > "$out_file"
       return 0
@@ -214,7 +214,7 @@ SMD_DBPASS="$PG_PASS" SMD_DBTYPE=postgres "$SMD_BIN" \
   -dbname "$PG_DB" -dbuser "$PG_USER" -dbopts 'sslmode=disable' \
   -http-listen ":$SMD_PORT" -openchami -log 2 >"$SMD_LOG" 2>&1 &
 SMD_PID=$!
-wait_for_http "http://localhost:$SMD_PORT/hsm/v2/service/ready" 90 1
+wait_for_http "https://localhost:$SMD_PORT/hsm/v2/service/ready" 90 1
 
 echo "==> Starting FRU-tracker"
 (cd "$FRU_DIR" && env "FRU-TRACKER_PORT=$FRU_PORT" "FRU-TRACKER_DATABASE_URL=$FRU_DB_URL" \
@@ -259,7 +259,7 @@ echo "==> Starting middleware (DRY_RUN=false, InsecureTLS=true)"
 cd "$ROOT_DIR"
 MASTER_KEY="$MASTER_KEY" \
 FRU_MIDDLE_FRU_BASE_URL="http://localhost:$FRU_PORT" \
-FRU_MIDDLE_SMD_BASE_URL="http://localhost:$SMD_PORT" \
+FRU_MIDDLE_SMD_BASE_URL="https://localhost:$SMD_PORT" \
 FRU_MIDDLE_SECRETS_FILE="$SECRETS_FILE" \
 FRU_MIDDLE_POLL_INTERVAL=5s \
 FRU_MIDDLE_DRY_RUN=false \
