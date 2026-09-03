@@ -109,9 +109,10 @@ Six commits, `55f8ff2..a7d6cfc`.
 (`https://172.24.0.3/redfish/v1/Systems/...`). SMD keys ComponentEndpoints off
 the Redfish-relative `@odata.id`, so the client reduces them back to a path.
 
-**NIC filtering.** Magellan reports every NIC a BMC advertises. The middleware
-drops address-less NICs before building the SMD payload, matching the deleted
-client's behaviour.
+**NIC forwarding.** Magellan reports every NIC a BMC advertises. The middleware
+forwards those carrying a MAC or an IP, dropping only entries that identify
+nothing. This deliberately diverges from the deleted client, which dropped any
+NIC without an IP and so sent SMD no host MACs at all.
 
 **Timeout semantics changed.** `FRU_MIDDLE_HTTP_TIMEOUT` (20s) previously bounded
 each individual Redfish request. One magellan call now covers an entire crawl, so
@@ -136,12 +137,17 @@ two stores drift, SMD registration succeeds while magellan cannot read the BMC.
 - **System NICs on this BMC carry no IP address.** The Redfish resource has no
   `IPv4Addresses` or `IPv6Addresses` field at all — a BMC knows the host NIC's
   MAC but not the IP the host OS assigned. Addresses live on the manager NIC.
-  All five system NICs are therefore filtered out before SMD, as they were by
-  the deleted client.
-- SMD performs its own Redfish discovery after endpoint registration. The
-  `EthernetNICInfo` in the 2026-08-12 record came from SMD's crawl, not the
-  middleware payload. **SMD state is therefore not evidence that any particular
-  run performed work** — see "Invalid Run" below.
+  All five are still forwarded to SMD for their MACs, which required a companion
+  SMD fix: `createCompEthInterfacesV2` built a one-element IP mapping even when
+  the IP was empty, and `IPAddressMapping.Verify` rejects that, so every MAC-only
+  NIC produced a 400. Commit `35bdbd2` had worked around it by discarding the
+  NICs, which silently left the node with no MACs anywhere.
+- **SMD never contacts a BMC.** Endpoints are registered with
+  `RediscoverOnUpdate: false`, and keeping BMC interaction out of SMD is a
+  deliberate OpenCHAMI design choice. Everything SMD holds for a node comes from
+  the middleware payload, so a NIC dropped here is a NIC that exists nowhere in
+  SMD. The five NICs in the 2026-08-12 record were sent by the middleware of
+  that day, before commit `35bdbd2` added the IP-presence filter.
 
 ---
 
@@ -234,8 +240,9 @@ process, so the harness's `stop_pid` killed the wrapper and left the server
 alive. Those orphans kept polling `localhost:8080` and `127.0.0.1:18443`, and a
 leftover cleanup handler tore down this run's magellan and FRU-tracker mid-flight.
 
-The SMD assertions could not detect this because SMD rediscovers endpoints on its
-own; its state is not evidence that a given run did any work.
+The SMD assertions could not detect this because they only read SMD state, which
+a stale database or a leftover middleware writing to the same SMD reproduces
+exactly. SMD state is not evidence that a given run did any work.
 
 ### Harness changes made in response
 

@@ -320,10 +320,9 @@ wait_for_contains "https://localhost:$SMD_PORT/hsm/v2/Inventory/RedfishEndpoints
 echo "==> Waiting for ComponentEndpoints to appear in SMD (up to 2 min)..."
 wait_for_contains "https://localhost:$SMD_PORT/hsm/v2/Inventory/ComponentEndpoints" "$XNAME" "$COMP_RESP" 120 2
 
-# SMD state alone cannot prove this run did the work: SMD rediscovers endpoints
-# itself, and a stale database or a leftover middleware would look identical.
-# Requiring an inventory call in this run's magellan log is what ties the result
-# to this run.
+# SMD state alone cannot prove this run did the work: a stale database or a
+# leftover middleware writing to the same SMD looks identical. Requiring an
+# inventory call in this run's magellan log is what ties the result to this run.
 echo "==> Verifying magellan served the BMC crawl for this run"
 if ! grep -q '"path":"/v1/inventory"' "$MAGELLAN_LOG"; then
   echo "ERROR: magellan served no /v1/inventory request in this run." >&2
@@ -346,24 +345,13 @@ if ! grep -q 'cycle complete: total=[0-9]* processed=[1-9]' "$MIDDLE_LOG"; then
 fi
 echo "    middleware processed the candidate: OK"
 
-# ComponentEndpoints appear as soon as the payload is accepted, but SMD enriches
-# them from its own Redfish crawl afterwards. Asserting before that completes
-# compares a half-populated record against the baseline.
-echo "==> Waiting for SMD discovery to complete (up to 3 min)..."
-discovery_status="NotYetQueried"
-for _ in $(seq 1 90); do
-  discovery_status="$(curl -fsSk "https://localhost:$SMD_PORT/hsm/v2/Inventory/RedfishEndpoints" 2>/dev/null \
-    | grep -o '"LastDiscoveryStatus":"[^"]*"' | head -1 | cut -d'"' -f4)"
-  [[ -n "$discovery_status" && "$discovery_status" != "NotYetQueried" && "$discovery_status" != "DiscoveryStarted" ]] && break
-  sleep 2
-done
-echo "    LastDiscoveryStatus: ${discovery_status:-unknown}"
-if [[ "$discovery_status" == "NotYetQueried" ]]; then
-  echo "    NOTE: SMD never ran discovery; ComponentEndpoint contents reflect only the"
-  echo "          middleware payload, so NIC data will be sparser than a discovered endpoint."
-fi
+# SMD is registered with RediscoverOnUpdate false and, by OpenCHAMI design, never
+# contacts a BMC. Everything it holds came from the payload above, so there is
+# nothing to wait for; read the settled state directly.
+discovery_status="$(curl -fsSk "https://localhost:$SMD_PORT/hsm/v2/Inventory/RedfishEndpoints" 2>/dev/null \
+  | grep -o '"LastDiscoveryStatus":"[^"]*"' | head -1 | cut -d'"' -f4)"
+echo "==> SMD discovery status: ${discovery_status:-unknown} (SMD does not query BMCs)"
 
-# Re-read after discovery so the recorded output is the settled state.
 curl -fsSk "https://localhost:$SMD_PORT/hsm/v2/Inventory/RedfishEndpoints" >"$REDFISH_RESP" 2>/dev/null || true
 curl -fsSk "https://localhost:$SMD_PORT/hsm/v2/Inventory/ComponentEndpoints" >"$COMP_RESP" 2>/dev/null || true
 
