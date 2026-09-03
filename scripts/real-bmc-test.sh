@@ -16,9 +16,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SMD_DIR="${SMD_DIR:-/Users/benmcdonald/smd}"
-FRU_DIR="${FRU_DIR:-/Users/benmcdonald/fru-tracker}"
-MAGELLAN_DIR="${MAGELLAN_DIR:-/Users/benmcdonald/magellan}"
+# Default to sibling checkouts of this repo; override for other layouts.
+SMD_DIR="${SMD_DIR:-$ROOT_DIR/../smd}"
+FRU_DIR="${FRU_DIR:-$ROOT_DIR/../fru-tracker}"
+MAGELLAN_DIR="${MAGELLAN_DIR:-$ROOT_DIR/../magellan}"
 
 PG_PORT="${PG_PORT:-5432}"
 SMD_PORT="${SMD_PORT:-27779}"

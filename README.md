@@ -103,9 +103,9 @@ What it does automatically:
 
 Optional environment overrides:
 
-- `SMD_DIR` (default: `/Users/benmcdonald/smd`)
-- `FRU_DIR` (default: `/Users/benmcdonald/fru-tracker`)
-- `MAGELLAN_DIR` (default: `/Users/benmcdonald/magellan`)
+- `SMD_DIR` (default: `../smd` relative to this repo)
+- `FRU_DIR` (default: `../fru-tracker` relative to this repo)
+- `MAGELLAN_DIR` (default: `../magellan` relative to this repo)
 - `SMD_PORT`, `FRU_PORT`, `REDFISH_PORT`, `MAGELLAN_PORT`
 - `PG_PORT` (if busy, script auto-falls back to a free port)
 - `MASTER_KEY`
