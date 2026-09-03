@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Real-BMC integration test.
-# Starts SMD + FRU-tracker locally, posts a DiscoverySnapshot for a real BMC,
-# runs the middleware, then validates RedfishEndpoints and ComponentEndpoints.
+# Starts SMD + FRU-tracker + the magellan BMC daemon locally, posts a
+# DiscoverySnapshot for a real BMC, runs the middleware, then validates
+# RedfishEndpoints and ComponentEndpoints. The middleware never talks to the BMC
+# itself; magellan performs all Redfish traffic.
 #
 # Required env vars (no defaults):
 #   BMC_ADDRESS   — IP or hostname of the BMC (e.g. 172.24.0.3)
@@ -10,16 +12,18 @@
 #   XNAME         — xname to assign this BMC in SMD (e.g. x3000c0s1b0)
 #
 # Optional overrides:
-#   SMD_DIR, FRU_DIR, SMD_PORT, FRU_PORT, PG_PORT, MASTER_KEY
+#   SMD_DIR, FRU_DIR, MAGELLAN_DIR, SMD_PORT, FRU_PORT, MAGELLAN_PORT, PG_PORT, MASTER_KEY
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SMD_DIR="${SMD_DIR:-/Users/benmcdonald/smd}"
 FRU_DIR="${FRU_DIR:-/Users/benmcdonald/fru-tracker}"
+MAGELLAN_DIR="${MAGELLAN_DIR:-/Users/benmcdonald/magellan}"
 
 PG_PORT="${PG_PORT:-5432}"
 SMD_PORT="${SMD_PORT:-27779}"
 FRU_PORT="${FRU_PORT:-8080}"
+MAGELLAN_PORT="${MAGELLAN_PORT:-18443}"
 
 PG_DB="${PG_DB:-hmsds}"
 PG_USER="${PG_USER:-hmsdsuser}"
@@ -42,14 +46,18 @@ FRU_DB_URL="file:$WORK_DIR/fru-tracker-real.db?cache=shared&_fk=1"
 SMD_BIN="$WORK_DIR/smd-local"
 SMD_INIT_BIN="$WORK_DIR/smd-init-local"
 FRU_BIN="$WORK_DIR/fru-tracker-local"
+MAGELLAN_BIN="$WORK_DIR/magellan-local"
+MIDDLE_BIN="$WORK_DIR/middleware-local"
 PAYLOAD_JSON="$WORK_DIR/fru-upload-real.json"
 
 SMD_PID=""
 FRU_PID=""
+MAGELLAN_PID=""
 MIDDLE_PID=""
 
 SMD_LOG="$WORK_DIR/smd.log"
 FRU_LOG="$WORK_DIR/fru.log"
+MAGELLAN_LOG="$WORK_DIR/magellan.log"
 MIDDLE_LOG="$WORK_DIR/middle.log"
 SMD_INIT_LOG="$WORK_DIR/smd-init.log"
 
@@ -105,10 +113,12 @@ pick_free_port() {
 cleanup() {
   set +e
   [[ -n "$MIDDLE_PID" ]] && stop_pid "$MIDDLE_PID"
+  [[ -n "$MAGELLAN_PID" ]] && stop_pid "$MAGELLAN_PID"
   [[ -n "$FRU_PID" ]]    && stop_pid "$FRU_PID"
   [[ -n "$SMD_PID" ]]    && stop_pid "$SMD_PID"
   clear_port_listeners "$SMD_PORT"
   clear_port_listeners "$FRU_PORT"
+  clear_port_listeners "$MAGELLAN_PORT"
   docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
   echo ""
   echo "Logs and artifacts kept in: $WORK_DIR"
@@ -160,6 +170,7 @@ require_cmd lsof
 docker info >/dev/null 2>&1 || { echo "ERROR: Docker daemon not reachable." >&2; exit 1; }
 [[ -d "$SMD_DIR" ]] || { echo "ERROR: SMD_DIR does not exist: $SMD_DIR" >&2; exit 1; }
 [[ -d "$FRU_DIR" ]] || { echo "ERROR: FRU_DIR does not exist: $FRU_DIR" >&2; exit 1; }
+[[ -d "$MAGELLAN_DIR" ]] || { echo "ERROR: MAGELLAN_DIR does not exist: $MAGELLAN_DIR" >&2; exit 1; }
 
 echo "==> Verifying Redfish connectivity to $BMC_ADDRESS"
 if ! curl -fsSk -u "$BMC_USER:$BMC_PASS" "https://$BMC_ADDRESS/redfish/v1/" >/dev/null 2>&1; then
@@ -171,6 +182,19 @@ echo "    BMC reachable: OK"
 echo "==> Clearing stale listeners"
 clear_port_listeners "$SMD_PORT"
 clear_port_listeners "$FRU_PORT"
+clear_port_listeners "$MAGELLAN_PORT"
+
+# A leftover middleware or magellan from an earlier run will keep polling these
+# ports and write to the SMD this run starts, which produces a passing result
+# that has nothing to do with the code under test.
+stale="$(pgrep -f 'cmd/server|middleware-local|magellan-local|magellan serve' 2>/dev/null || true)"
+if [[ -n "$stale" ]]; then
+  echo "ERROR: processes from a previous run are still alive:" >&2
+  ps -o pid,etimes,cmd -p $(echo "$stale" | tr '\n' ',' | sed 's/,$//') >&2 2>/dev/null || true
+  echo "ERROR: they will contaminate this run. Stop them first:" >&2
+  echo "         pkill -f 'cmd/server'; pkill -f 'middleware-local'; pkill -f 'magellan'" >&2
+  exit 1
+fi
 
 if is_port_in_use "$PG_PORT"; then
   alt="$(pick_free_port 15432 25432 35432 45432 55432 || true)"
@@ -196,9 +220,14 @@ docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null 2>&1
   echo "ERROR: Postgres did not become ready" >&2; exit 1
 }
 
-echo "==> Building SMD and FRU-tracker binaries"
-(cd "$SMD_DIR" && GOTOOLCHAIN=local go build -o "$SMD_BIN" ./cmd/smd && GOTOOLCHAIN=local go build -o "$SMD_INIT_BIN" ./cmd/smd-init)
-(cd "$FRU_DIR" && GOTOOLCHAIN=local go build -o "$FRU_BIN" ./cmd/server)
+echo "==> Building SMD, FRU-tracker, and magellan binaries"
+# SMD and FRU-tracker pin newer Go versions than the host often has. Default to
+# letting Go fetch the toolchain their go.mod asks for; set GOTOOLCHAIN=local to
+# force the installed one.
+export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}"
+(cd "$SMD_DIR" && go build -o "$SMD_BIN" ./cmd/smd && go build -o "$SMD_INIT_BIN" ./cmd/smd-init)
+(cd "$FRU_DIR" && go build -o "$FRU_BIN" ./cmd/server)
+(cd "$MAGELLAN_DIR" && go build -o "$MAGELLAN_BIN" .)
 
 echo "==> Initializing SMD schema"
 SMD_DBPASS="$PG_PASS" "$SMD_INIT_BIN" \
@@ -229,6 +258,17 @@ echo "==> Storing BMC credentials"
   --password "$BMC_PASS" \
   --store-path "$SECRETS_FILE" >/dev/null)
 
+# Magellan owns all BMC/Redfish traffic; it reads the same encrypted secret store
+# so the middleware never sends credentials over the wire.
+echo "==> Starting magellan BMC daemon on port $MAGELLAN_PORT"
+MASTER_KEY="$MASTER_KEY" "$MAGELLAN_BIN" serve \
+  --host 127.0.0.1 \
+  --port "$MAGELLAN_PORT" \
+  --secrets-file "$SECRETS_FILE" \
+  --insecure >"$MAGELLAN_LOG" 2>&1 &
+MAGELLAN_PID=$!
+wait_for_http "http://127.0.0.1:$MAGELLAN_PORT/healthz" 60 1
+
 echo "==> Posting DiscoverySnapshot for $XNAME -> https://$BMC_ADDRESS"
 cat > "$PAYLOAD_JSON" <<EOF
 {
@@ -257,14 +297,18 @@ echo "    Device visible in FRU-tracker: OK"
 
 echo "==> Starting middleware (DRY_RUN=false, InsecureTLS=true)"
 cd "$ROOT_DIR"
+# Built rather than `go run`: go run spawns a separate child process, so killing
+# the wrapper leaves an orphaned server polling these ports into later runs.
+go build -o "$MIDDLE_BIN" ./cmd/server
 MASTER_KEY="$MASTER_KEY" \
-FRU_MIDDLE_FRU_BASE_URL="http://localhost:$FRU_PORT" \
-FRU_MIDDLE_SMD_BASE_URL="https://localhost:$SMD_PORT" \
+FRU_MIDDLE_FRU_BASE_URL="http://127.0.0.1:$FRU_PORT" \
+FRU_MIDDLE_SMD_BASE_URL="https://127.0.0.1:$SMD_PORT" \
+FRU_MIDDLE_MAGELLAN_BASE_URL="http://127.0.0.1:$MAGELLAN_PORT" \
 FRU_MIDDLE_SECRETS_FILE="$SECRETS_FILE" \
 FRU_MIDDLE_POLL_INTERVAL=5s \
 FRU_MIDDLE_DRY_RUN=false \
 FRU_MIDDLE_INSECURE_TLS=true \
-go run ./cmd/server >"$MIDDLE_LOG" 2>&1 &
+"$MIDDLE_BIN" >"$MIDDLE_LOG" 2>&1 &
 MIDDLE_PID=$!
 
 echo "==> Waiting for RedfishEndpoint to appear in SMD (up to 2 min)..."
@@ -272,6 +316,53 @@ wait_for_contains "https://localhost:$SMD_PORT/hsm/v2/Inventory/RedfishEndpoints
 
 echo "==> Waiting for ComponentEndpoints to appear in SMD (up to 2 min)..."
 wait_for_contains "https://localhost:$SMD_PORT/hsm/v2/Inventory/ComponentEndpoints" "$XNAME" "$COMP_RESP" 120 2
+
+# SMD state alone cannot prove this run did the work: SMD rediscovers endpoints
+# itself, and a stale database or a leftover middleware would look identical.
+# Requiring an inventory call in this run's magellan log is what ties the result
+# to this run.
+echo "==> Verifying magellan served the BMC crawl for this run"
+if ! grep -q '"path":"/v1/inventory"' "$MAGELLAN_LOG"; then
+  echo "ERROR: magellan served no /v1/inventory request in this run." >&2
+  echo "ERROR: SMD data did not come from this run - treat the result as invalid." >&2
+  echo "--- magellan log ---" >&2; cat "$MAGELLAN_LOG" >&2
+  echo "--- middleware log ---" >&2; tail -20 "$MIDDLE_LOG" >&2
+  exit 1
+fi
+inventory_status="$(grep -o '"path":"/v1/inventory","status":[0-9]*' "$MAGELLAN_LOG" | tail -1 | grep -o '[0-9]*$')"
+if [[ "$inventory_status" != "200" ]]; then
+  echo "ERROR: magellan inventory returned status ${inventory_status:-unknown}, expected 200" >&2
+  exit 1
+fi
+echo "    magellan served /v1/inventory -> 200: OK"
+
+if ! grep -q 'cycle complete: total=[0-9]* processed=[1-9]' "$MIDDLE_LOG"; then
+  echo "ERROR: this run's middleware processed no candidates; SMD data is stale." >&2
+  tail -20 "$MIDDLE_LOG" >&2
+  exit 1
+fi
+echo "    middleware processed the candidate: OK"
+
+# ComponentEndpoints appear as soon as the payload is accepted, but SMD enriches
+# them from its own Redfish crawl afterwards. Asserting before that completes
+# compares a half-populated record against the baseline.
+echo "==> Waiting for SMD discovery to complete (up to 3 min)..."
+discovery_status="NotYetQueried"
+for _ in $(seq 1 90); do
+  discovery_status="$(curl -fsSk "https://localhost:$SMD_PORT/hsm/v2/Inventory/RedfishEndpoints" 2>/dev/null \
+    | grep -o '"LastDiscoveryStatus":"[^"]*"' | head -1 | cut -d'"' -f4)"
+  [[ -n "$discovery_status" && "$discovery_status" != "NotYetQueried" && "$discovery_status" != "DiscoveryStarted" ]] && break
+  sleep 2
+done
+echo "    LastDiscoveryStatus: ${discovery_status:-unknown}"
+if [[ "$discovery_status" == "NotYetQueried" ]]; then
+  echo "    NOTE: SMD never ran discovery; ComponentEndpoint contents reflect only the"
+  echo "          middleware payload, so NIC data will be sparser than a discovered endpoint."
+fi
+
+# Re-read after discovery so the recorded output is the settled state.
+curl -fsSk "https://localhost:$SMD_PORT/hsm/v2/Inventory/RedfishEndpoints" >"$REDFISH_RESP" 2>/dev/null || true
+curl -fsSk "https://localhost:$SMD_PORT/hsm/v2/Inventory/ComponentEndpoints" >"$COMP_RESP" 2>/dev/null || true
 
 echo ""
 echo "==> Validating results"
@@ -293,4 +384,5 @@ echo ""
 echo "Log files:"
 echo "  SMD:        $SMD_LOG"
 echo "  FRU:        $FRU_LOG"
+echo "  Magellan:   $MAGELLAN_LOG"
 echo "  Middleware: $MIDDLE_LOG"

@@ -4,11 +4,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SMD_DIR="${SMD_DIR:-/Users/benmcdonald/smd}"
 FRU_DIR="${FRU_DIR:-/Users/benmcdonald/fru-tracker}"
+MAGELLAN_DIR="${MAGELLAN_DIR:-/Users/benmcdonald/magellan}"
 
 PG_PORT="${PG_PORT:-5432}"
 SMD_PORT="${SMD_PORT:-27779}"
 FRU_PORT="${FRU_PORT:-8080}"
 REDFISH_PORT="${REDFISH_PORT:-18081}"
+MAGELLAN_PORT="${MAGELLAN_PORT:-18443}"
 
 PG_DB="${PG_DB:-hmsds}"
 PG_USER="${PG_USER:-hmsdsuser}"
@@ -27,17 +29,21 @@ FRU_DB_URL="file:$WORK_DIR/fru-tracker-e2e.db?cache=shared&_fk=1"
 SMD_BIN="$WORK_DIR/smd-local"
 SMD_INIT_BIN="$WORK_DIR/smd-init-local"
 FRU_BIN="$WORK_DIR/fru-tracker-local"
+MAGELLAN_BIN="$WORK_DIR/magellan-local"
+MIDDLE_BIN="$WORK_DIR/middleware-local"
 REDFISH_MOCK="$WORK_DIR/redfish-mock.go"
 PAYLOAD_JSON="$WORK_DIR/fru-upload-e2e.json"
 
 SMD_PID=""
 FRU_PID=""
 REDFISH_PID=""
+MAGELLAN_PID=""
 MIDDLE_PID=""
 
 SMD_LOG="$WORK_DIR/smd.log"
 FRU_LOG="$WORK_DIR/fru.log"
 REDFISH_LOG="$WORK_DIR/redfish.log"
+MAGELLAN_LOG="$WORK_DIR/magellan.log"
 MIDDLE_LOG="$WORK_DIR/middle.log"
 SMD_INIT_LOG="$WORK_DIR/smd-init.log"
 
@@ -125,12 +131,14 @@ pick_free_port() {
 cleanup() {
   set +e
   if [[ -n "$MIDDLE_PID" ]]; then stop_pid "$MIDDLE_PID"; fi
+  if [[ -n "$MAGELLAN_PID" ]]; then stop_pid "$MAGELLAN_PID"; fi
   if [[ -n "$FRU_PID" ]]; then stop_pid "$FRU_PID"; fi
   if [[ -n "$SMD_PID" ]]; then stop_pid "$SMD_PID"; fi
   if [[ -n "$REDFISH_PID" ]]; then stop_pid "$REDFISH_PID"; fi
   clear_port_listeners "$SMD_PORT"
   clear_port_listeners "$FRU_PORT"
   clear_port_listeners "$REDFISH_PORT"
+  clear_port_listeners "$MAGELLAN_PORT"
   docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
   echo ""
   echo "Logs and artifacts kept in: $WORK_DIR"
@@ -202,11 +210,13 @@ fi
 
 [[ -d "$SMD_DIR" ]] || { echo "ERROR: SMD_DIR does not exist: $SMD_DIR" >&2; exit 1; }
 [[ -d "$FRU_DIR" ]] || { echo "ERROR: FRU_DIR does not exist: $FRU_DIR" >&2; exit 1; }
+[[ -d "$MAGELLAN_DIR" ]] || { echo "ERROR: MAGELLAN_DIR does not exist: $MAGELLAN_DIR" >&2; exit 1; }
 
 echo "==> Clearing stale listeners from prior runs"
 clear_port_listeners "$SMD_PORT"
 clear_port_listeners "$FRU_PORT"
 clear_port_listeners "$REDFISH_PORT"
+clear_port_listeners "$MAGELLAN_PORT"
 
 if is_port_in_use "$PG_PORT"; then
   alt_pg_port="$(pick_free_port 15432 25432 35432 45432 55432 65432 || true)"
@@ -221,6 +231,7 @@ fi
 check_port_free "$SMD_PORT"
 check_port_free "$FRU_PORT"
 check_port_free "$REDFISH_PORT"
+check_port_free "$MAGELLAN_PORT"
 
 if [[ "${#MASTER_KEY}" -ne 64 ]]; then
   echo "ERROR: MASTER_KEY must be a 64-character hex string" >&2
@@ -257,6 +268,10 @@ echo "==> Building SMD and FRU binaries"
 (
   cd "$FRU_DIR"
   go build -o "$FRU_BIN" ./cmd/server
+)
+(
+  cd "$MAGELLAN_DIR"
+  go build -o "$MAGELLAN_BIN" .
 )
 
 echo "==> Initializing SMD schema"
@@ -311,15 +326,35 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 func main() {
   mux := http.NewServeMux()
-  mux.HandleFunc("/redfish/v1", func(w http.ResponseWriter, r *http.Request) {
+  serviceRoot := func(w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{
-      "@odata.id": "/redfish/v1",
+      "@odata.id": "/redfish/v1/",
+      "@odata.type": "#ServiceRoot.v1_5_0.ServiceRoot",
+      "Id": "RootService",
+      "Name": "Root Service",
+      "RedfishVersion": "1.6.0",
       "Systems": map[string]any{"@odata.id": "/redfish/v1/Systems"},
       "Managers": map[string]any{"@odata.id": "/redfish/v1/Managers"},
+      "Chassis": map[string]any{"@odata.id": "/redfish/v1/Chassis"},
+      "Links": map[string]any{
+        "Sessions": map[string]any{"@odata.id": "/redfish/v1/SessionService/Sessions"},
+      },
+    })
+  }
+  mux.HandleFunc("/redfish/v1", serviceRoot)
+  mux.HandleFunc("/redfish/v1/{\$}", serviceRoot)
+  mux.HandleFunc("/redfish/v1/Chassis", func(w http.ResponseWriter, r *http.Request) {
+    writeJSON(w, map[string]any{
+      "@odata.id": "/redfish/v1/Chassis",
+      "Name": "Chassis Collection",
+      "Members": []any{},
+      "Members@odata.count": 0,
     })
   })
   mux.HandleFunc("/redfish/v1/Systems", func(w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{
+      "@odata.id": "/redfish/v1/Systems",
+      "Name": "Computer System Collection",
       "Members": []any{map[string]any{"@odata.id": "/redfish/v1/Systems/System-1"}},
       "Members@odata.count": 1,
     })
@@ -327,6 +362,8 @@ func main() {
   mux.HandleFunc("/redfish/v1/Systems/System-1", func(w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{
       "@odata.id": "/redfish/v1/Systems/System-1",
+      "@odata.type": "#ComputerSystem.v1_5_0.ComputerSystem",
+      "Id": "System-1",
       "UUID": "317091ec-8be6-11e8-ab21-a4bf013f6b40",
       "Manufacturer": "Intel Corporation",
       "SystemType": "Physical",
@@ -343,12 +380,12 @@ func main() {
         "TotalSystemMemoryGiB": 64,
       },
       "Links": map[string]any{
-        "Managers": []any{map[string]any{"@odata.id": "/redfish/v1/Managers/BMC-1"}},
+        "ManagedBy": []any{map[string]any{"@odata.id": "/redfish/v1/Managers/BMC-1"}},
       },
       "Actions": map[string]any{
         "#ComputerSystem.Reset": map[string]any{
           "target": "/redfish/v1/Systems/System-1/Actions/ComputerSystem.Reset",
-          "@Redfish.ActionInfo": "/redfish/v1/Systems/System-1/ResetActionInfo",
+          "ResetType@Redfish.AllowableValues": []any{"On", "ForceOff", "GracefulShutdown", "ForceRestart"},
         },
       },
       "EthernetInterfaces": map[string]any{"@odata.id": "/redfish/v1/Systems/System-1/EthernetInterfaces"},
@@ -356,6 +393,8 @@ func main() {
   })
   mux.HandleFunc("/redfish/v1/Systems/System-1/EthernetInterfaces", func(w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{
+      "@odata.id": "/redfish/v1/Systems/System-1/EthernetInterfaces",
+      "Name": "Ethernet Interface Collection",
       "Members": []any{
         map[string]any{"@odata.id": "/redfish/v1/Systems/System-1/EthernetInterfaces/1"},
         map[string]any{"@odata.id": "/redfish/v1/Systems/System-1/EthernetInterfaces/2"},
@@ -366,25 +405,31 @@ func main() {
   mux.HandleFunc("/redfish/v1/Systems/System-1/EthernetInterfaces/1", func(w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{
       "@odata.id": "/redfish/v1/Systems/System-1/EthernetInterfaces/1",
+      "Id": "1",
       "MACAddress": "a4-bf-01-3f-6b-40",
       "Name": "Computer System Ethernet Interface",
       "Description": "System NIC 1",
       "LinkStatus": "LinkUp",
+      "InterfaceEnabled": true,
       "IPv4Addresses": []any{map[string]any{"Address": "192.0.2.10"}},
     })
   })
   mux.HandleFunc("/redfish/v1/Systems/System-1/EthernetInterfaces/2", func(w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{
       "@odata.id": "/redfish/v1/Systems/System-1/EthernetInterfaces/2",
+      "Id": "2",
       "MACAddress": "a4-bf-01-3f-6b-41",
       "Name": "Computer System Ethernet Interface",
       "Description": "System NIC 2",
       "LinkStatus": "LinkUp",
+      "InterfaceEnabled": true,
       "IPv4Addresses": []any{map[string]any{"Address": "192.0.2.11"}},
     })
   })
   mux.HandleFunc("/redfish/v1/Managers", func(w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{
+      "@odata.id": "/redfish/v1/Managers",
+      "Name": "Manager Collection",
       "Members": []any{map[string]any{"@odata.id": "/redfish/v1/Managers/BMC-1"}},
       "Members@odata.count": 1,
     })
@@ -392,8 +437,19 @@ func main() {
   mux.HandleFunc("/redfish/v1/Managers/BMC-1", func(w http.ResponseWriter, r *http.Request) {
     writeJSON(w, map[string]any{
       "@odata.id": "/redfish/v1/Managers/BMC-1",
+      "@odata.type": "#Manager.v1_5_0.Manager",
+      "Id": "BMC-1",
       "ManagerType": "BMC",
       "Name": "BMC-1",
+      "EthernetInterfaces": map[string]any{"@odata.id": "/redfish/v1/Managers/BMC-1/EthernetInterfaces"},
+    })
+  })
+  mux.HandleFunc("/redfish/v1/Managers/BMC-1/EthernetInterfaces", func(w http.ResponseWriter, r *http.Request) {
+    writeJSON(w, map[string]any{
+      "@odata.id": "/redfish/v1/Managers/BMC-1/EthernetInterfaces",
+      "Name": "Ethernet Interface Collection",
+      "Members": []any{},
+      "Members@odata.count": 0,
     })
   })
 
@@ -416,6 +472,17 @@ rm -f "$CHECKPOINT_PATH"
     --password changeme \
     --store-path "$SECRETS_FILE" >/dev/null
 )
+
+# Magellan owns all BMC/Redfish traffic; the middleware only calls its REST API.
+# It reads the same encrypted secret store so credentials never cross the wire.
+echo "==> Starting magellan BMC daemon on port $MAGELLAN_PORT"
+MASTER_KEY="$MASTER_KEY" "$MAGELLAN_BIN" serve \
+  --host 127.0.0.1 \
+  --port "$MAGELLAN_PORT" \
+  --secrets-file "$SECRETS_FILE" \
+  --insecure >"$MAGELLAN_LOG" 2>&1 &
+MAGELLAN_PID=$!
+wait_for_http "http://127.0.0.1:$MAGELLAN_PORT/healthz" 60 1
 
 echo "==> Posting DiscoverySnapshot to FRU-tracker"
 cat > "$PAYLOAD_JSON" <<EOF
@@ -452,13 +519,16 @@ wait_for_contains "http://localhost:$FRU_PORT/devices" "NODE12345" "$WORK_DIR/fr
 
 echo "==> Starting middleware"
 cd "$ROOT_DIR"
+# Built rather than `go run`, which spawns a child that survives killing it.
+go build -o "$MIDDLE_BIN" ./cmd/server
 MASTER_KEY="$MASTER_KEY" \
 FRU_MIDDLE_FRU_BASE_URL="http://localhost:$FRU_PORT" \
 FRU_MIDDLE_SMD_BASE_URL="http://localhost:$SMD_PORT" \
+FRU_MIDDLE_MAGELLAN_BASE_URL="http://127.0.0.1:$MAGELLAN_PORT" \
 FRU_MIDDLE_SECRETS_FILE="$SECRETS_FILE" \
 FRU_MIDDLE_POLL_INTERVAL=2s \
 FRU_MIDDLE_DRY_RUN=false \
-go run ./cmd/server >"$MIDDLE_LOG" 2>&1 &
+"$MIDDLE_BIN" >"$MIDDLE_LOG" 2>&1 &
 MIDDLE_PID=$!
 
 wait_for_contains "http://localhost:$SMD_PORT/hsm/v2/Inventory/RedfishEndpoints" "$XNAME" "$REDFISH_RESP" 120 1
@@ -492,4 +562,5 @@ echo "Log files:"
 echo "  SMD:      $SMD_LOG"
 echo "  FRU:      $FRU_LOG"
 echo "  Redfish:  $REDFISH_LOG"
+echo "  Magellan: $MAGELLAN_LOG"
 echo "  Middleware: $MIDDLE_LOG"
