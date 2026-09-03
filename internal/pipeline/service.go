@@ -192,6 +192,10 @@ func (s *Service) processCandidate(ctx context.Context, candidate models.Candida
 		payload.Managers = managers
 	}
 
+	log.Printf("candidate %s: systems=%d managers=%d system_nics=%d manager_nics=%d",
+		candidate.XName, len(payload.Systems), len(payload.Managers),
+		countNICs(payload.Systems), countManagerNICs(payload.Managers))
+
 	if s.cfg.DryRun {
 		log.Printf("dry-run: would upsert redfish endpoint id=%s systems=%d managers=%d", payload.ID, len(payload.Systems), len(payload.Managers))
 		return nil
@@ -202,6 +206,22 @@ func (s *Service) processCandidate(ctx context.Context, candidate models.Candida
 	}
 
 	return nil
+}
+
+func countNICs(systems []models.System) int {
+	n := 0
+	for _, s := range systems {
+		n += len(s.EthernetInterfaces)
+	}
+	return n
+}
+
+func countManagerNICs(managers []models.Manager) int {
+	n := 0
+	for _, m := range managers {
+		n += len(m.EthernetInterfaces)
+	}
+	return n
 }
 
 func splitHostAndDomain(address string) (string, string) {
