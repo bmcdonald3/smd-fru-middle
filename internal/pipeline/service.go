@@ -11,8 +11,8 @@ import (
 	"github.com/benmcdonald/smd-fru-middle/internal/checkpoint"
 	"github.com/benmcdonald/smd-fru-middle/internal/config"
 	"github.com/benmcdonald/smd-fru-middle/internal/fru"
+	"github.com/benmcdonald/smd-fru-middle/internal/magellan"
 	"github.com/benmcdonald/smd-fru-middle/internal/models"
-	"github.com/benmcdonald/smd-fru-middle/internal/redfish"
 	"github.com/benmcdonald/smd-fru-middle/internal/secrets"
 	"github.com/benmcdonald/smd-fru-middle/internal/secretsruntime"
 	"github.com/benmcdonald/smd-fru-middle/internal/smd"
@@ -21,7 +21,7 @@ import (
 type Service struct {
 	cfg        config.Config
 	fruClient  *fru.Client
-	redfish    *redfish.Client
+	magellan   *magellan.Client
 	smdClient  *smd.Client
 	checkpoint *checkpoint.Store
 }
@@ -30,7 +30,7 @@ func NewService(cfg config.Config) *Service {
 	return &Service{
 		cfg:        cfg,
 		fruClient:  fru.NewClient(cfg.FRUBaseURL, cfg.HTTPTimeout),
-		redfish:    redfish.NewClient(cfg.HTTPTimeout, cfg.InsecureTLS),
+		magellan:   magellan.NewClient(cfg.MagellanBaseURL, cfg.MagellanAuthToken, cfg.MagellanTimeout, cfg.InsecureTLS),
 		smdClient:  smd.NewClient(cfg.SMDBaseURL, cfg.HTTPTimeout, cfg.InsecureTLS),
 		checkpoint: checkpoint.New(cfg.CheckpointPath),
 	}
@@ -145,6 +145,9 @@ func (s *Service) processCandidate(ctx context.Context, candidate models.Candida
 		return fmt.Errorf("secret store not initialized")
 	}
 
+	// Credentials are read here only to hand SMD its own BMC login; BMC
+	// discovery itself is delegated to magellan, which resolves the same secret
+	// ID from the shared store.
 	raw, err := store.GetSecretByID(candidate.SecretID)
 	if err != nil {
 		return fmt.Errorf("secret lookup failed for %q: %w", candidate.SecretID, err)
@@ -167,9 +170,9 @@ func (s *Service) processCandidate(ctx context.Context, candidate models.Candida
 	}
 
 	if candidate.RedfishAddress != "" {
-		systems, managers, discoverErr := s.redfish.Discover(ctx, candidate.RedfishAddress, creds)
+		systems, managers, discoverErr := s.magellan.Inventory(ctx, candidate.RedfishAddress, candidate.SecretID)
 		if discoverErr != nil {
-			return fmt.Errorf("redfish discovery failed for %q: %w", candidate.XName, discoverErr)
+			return fmt.Errorf("magellan inventory failed for %q: %w", candidate.XName, discoverErr)
 		}
 		for i := range systems {
 			if strings.TrimSpace(systems[i].Manufacturer) == "" {

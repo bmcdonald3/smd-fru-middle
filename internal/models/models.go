@@ -56,8 +56,6 @@ type SMDRedfishEndpointPayload struct {
 }
 
 type System struct {
-	ID                 string              `json:"-"`
-	Type               string              `json:"-"`
 	URI                string              `json:"uri,omitempty"`
 	UUID               string              `json:"uuid,omitempty"`
 	Manufacturer       string              `json:"manufacturer,omitempty"`
@@ -95,8 +93,6 @@ type Power struct {
 }
 
 type Manager struct {
-	ID                 string              `json:"-"`
-	Type               string              `json:"-"`
 	URI                string              `json:"uri,omitempty"`
 	UUID               string              `json:"uuid,omitempty"`
 	Name               string              `json:"name,omitempty"`

@@ -48,21 +48,38 @@ curl -X POST http://localhost:8080/discoverysnapshots \
   }'
 ```
 
-**Step 4 — Run the middleware pointing at your real BMC**
+**Step 4 — Start the magellan BMC daemon**
+
+The middleware no longer talks to BMCs; magellan does. Point it at the same
+`secrets.json` so it can resolve the `secret_id` the middleware sends.
+
+```bash
+MASTER_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+magellan serve \
+  --host 127.0.0.1 \
+  --port 8443 \
+  --secrets-file secrets.json \
+  --insecure
+```
+
+Drop `--insecure` once your BMC presents a trusted certificate.
+
+**Step 5 — Run the middleware pointing at magellan**
 
 ```bash
 MASTER_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
 FRU_MIDDLE_FRU_BASE_URL=http://localhost:8080 \
 FRU_MIDDLE_SMD_BASE_URL=http://localhost:27779 \
+FRU_MIDDLE_MAGELLAN_BASE_URL=http://127.0.0.1:8443 \
 FRU_MIDDLE_SECRETS_FILE=secrets.json \
 FRU_MIDDLE_POLL_INTERVAL=5s \
 FRU_MIDDLE_DRY_RUN=true \
 go run ./cmd/server
 ```
 
-Start with `DRY_RUN=true` — it will log exactly what it *would* write to SMD without touching anything. Once you confirm the Redfish data looks right in the logs, flip to `DRY_RUN=false`.
+Start with `DRY_RUN=true` — it will log exactly what it *would* write to SMD without touching anything. Once you confirm the inventory data looks right in the logs, flip to `DRY_RUN=false`.
 
-**Step 5 — Check what landed in SMD**
+**Step 6 — Check what landed in SMD**
 
 ```bash
 curl -s http://localhost:27779/hsm/v2/Inventory/RedfishEndpoints | jq .
@@ -72,7 +89,7 @@ curl -s http://localhost:27779/hsm/v2/Inventory/ComponentEndpoints | jq .
 ---
 
 The two things most likely to need tweaking with a real BMC:
-1. **TLS** — if the BMC uses a self-signed cert, the Redfish client will reject it. Let me know and I can add an `InsecureSkipVerify` option or a CA flag.
-2. **Redfish shape differences** — real BMCs sometimes use slightly different field names or structures than the mock. The middleware logs will show exactly what came back from Redfish if something goes wrong.
+1. **TLS** — if the BMC uses a self-signed cert, run the magellan daemon with `--insecure`.
+2. **Redfish shape differences** — real BMCs sometimes use slightly different field names or structures than the mock. The magellan daemon's logs show exactly what came back from the BMC if something goes wrong.
 
 Created 4 todos

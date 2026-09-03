@@ -1,7 +1,9 @@
 # FRU to SMD Middleware Architecture (V1)
 
 ## 1. Purpose
-Build a middleware service that ingests hardware discovery state from FRU-tracker, enriches it with Redfish data, and populates SMD RedfishEndpoints and ComponentEndpoints so downstream services can boot and manage nodes.
+Build a middleware service that ingests hardware discovery state from FRU-tracker, enriches it with Redfish data obtained from the magellan BMC daemon, and populates SMD RedfishEndpoints and ComponentEndpoints so downstream services can boot and manage nodes.
+
+This service never opens a connection to a BMC. Per RFD #133, magellan is the single component that speaks Redfish; this middleware is a client of its REST API.
 
 ## 2. Scope
 In scope:
@@ -30,11 +32,13 @@ Components:
 - Extracts endpoint identity hints and metadata
 
 3. Credential Resolver
-- Looks up Redfish credentials from a secret-store mapping
-- Returns username/password for each endpoint candidate
+- Looks up BMC credentials from a secret-store mapping
+- Supplies username/password for the SMD RedfishEndpoint record
+- Passes only the secret ID to magellan, which resolves the same entry itself
 
-4. Redfish Enricher
-- Calls Redfish service and required subordinate resources
+4. Magellan Inventory Client
+- Calls `POST /v1/inventory` on the magellan daemon with the BMC address and secret ID
+- Normalizes magellan's absolute resource URIs back to Redfish `@odata.id` paths
 - Builds normalized systems/managers representation
 
 5. SMD Writer
@@ -52,8 +56,8 @@ Components:
 1. Poll FRU-tracker for changed records since last watermark.
 2. Normalize and deduplicate candidates per cycle.
 3. Validate candidate has resolvable xname strategy for V1.
-4. Resolve Redfish credentials from secret store.
-5. Query Redfish and assemble required endpoint payload.
+4. Resolve the secret ID for the candidate from FRU properties.
+5. Ask magellan for the BMC's systems/managers and assemble the endpoint payload.
 6. Upsert into SMD RedfishEndpoints using V2-compatible request shape.
 7. Allow SMD parser path to populate ComponentEndpoints.
 8. Record success or failure and advance checkpoint.
@@ -80,7 +84,7 @@ Write behavior:
 
 ## 8. Reliability and Failure Handling
 1. Retry policy
-- Exponential backoff with jitter for FRU, Redfish, and SMD calls
+- Exponential backoff with jitter for FRU, magellan, and SMD calls
 - Per-endpoint retry budget per cycle
 
 2. Partial failure handling
@@ -94,11 +98,12 @@ Write behavior:
 ## 9. Security Model
 1. Credentials
 - Source of truth is secret store mapping
+- Credentials are never sent to magellan; only the secret ID is
 - No credential values in logs
 - Rotation-safe lookup on each processing cycle or with short cache TTL
 
 2. Transport
-- Prefer TLS for FRU, Redfish, and SMD connections
+- Prefer TLS for FRU, magellan, and SMD connections
 - Validate certs based on environment policy
 
 ## 10. Observability
@@ -106,7 +111,7 @@ Minimum metrics:
 1. Records polled
 2. Candidates accepted
 3. Candidates skipped due to missing xname
-4. Redfish enrichment success/failure
+4. Magellan inventory success/failure
 5. SMD write success/failure
 6. End-to-end latency per endpoint
 7. Checkpoint lag
@@ -125,7 +130,7 @@ Recommended V1:
 ## 12. Rollout Plan
 1. Dry-run mode
 - Run poll and enrichment without SMD writes
-- Validate candidate counts and redfish reachability
+- Validate candidate counts and magellan/BMC reachability
 
 2. Controlled write mode
 - Enable writes for a bounded subset

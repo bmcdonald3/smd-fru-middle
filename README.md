@@ -2,13 +2,19 @@
 
 Standalone FRU-to-SMD middleware service (V1).
 
+This service does **not** talk to BMCs. All Redfish traffic is delegated to a
+[magellan](https://github.com/OpenCHAMI/magellan) daemon (`magellan serve`) via
+its REST API, per RFD #133. The middleware only calls `POST /v1/inventory` with
+the BMC address and the secret ID to use; magellan resolves the credentials from
+the shared encrypted secret store, so credentials never cross the wire.
+
 ## What Is Implemented
 
 - Polls FRU-tracker `GET /devices` on an interval
 - Tracks progress with a persistent watermark checkpoint (`updatedAt` + `uid`)
 - Extracts candidate endpoints from FRU `spec.properties`
 - Resolves credentials from a Magellan encrypted secret store (firmware-updater style)
-- Discovers Redfish `Systems` and `Managers` collections
+- Delegates Redfish `Systems`/`Managers` discovery to the magellan daemon
 - Upserts SMD RedfishEndpoints using `PUT /hsm/v2/Inventory/RedfishEndpoints/{xname}`
 - Supports dry-run mode for safe validation
 
@@ -23,8 +29,11 @@ Standalone FRU-to-SMD middleware service (V1).
 - `MASTER_KEY` (required): 64-character hex string (AES-256 key)
 - `FRU_MIDDLE_FRU_BASE_URL` (default: `http://localhost:8080`)
 - `FRU_MIDDLE_SMD_BASE_URL` (default: `http://localhost:27779`)
+- `FRU_MIDDLE_MAGELLAN_BASE_URL` (default: `http://localhost:8443`)
+- `FRU_MIDDLE_MAGELLAN_AUTH_TOKEN` (default: empty; bearer token when the daemon runs with `--auth-token`)
 - `FRU_MIDDLE_POLL_INTERVAL` (default: `30s`)
-- `FRU_MIDDLE_HTTP_TIMEOUT` (default: `20s`)
+- `FRU_MIDDLE_HTTP_TIMEOUT` (default: `20s`; applies to FRU-tracker and SMD calls)
+- `FRU_MIDDLE_MAGELLAN_TIMEOUT` (default: `180s`; one call covers a full BMC crawl, so it needs far longer than `HTTP_TIMEOUT`)
 - `FRU_MIDDLE_CHECKPOINT_PATH` (default: `data/checkpoint.json`)
 - `FRU_MIDDLE_SECRETS_FILE` (default: `secrets.json`)
 - `FRU_MIDDLE_XNAME_PROPERTY_KEY` (default: `xname`)
@@ -45,6 +54,19 @@ MASTER_KEY=<64-char-hex> go run ./cmd/secret-cli \
 ```
 
 This stores encrypted credentials under `secret-id` in `secrets.json`.
+
+## Run the Magellan BMC Daemon
+
+The middleware requires a running magellan daemon that can read the same secret
+store:
+
+```bash
+MASTER_KEY=<64-char-hex> magellan serve \
+  --host 127.0.0.1 \
+  --port 8443 \
+  --secrets-file secrets.json \
+  --insecure
+```
 
 ## Run Middleware
 
@@ -67,11 +89,12 @@ Run the full FRU -> middleware -> SMD validation with one command:
 What it does automatically:
 
 - Starts a temporary PostgreSQL Docker container for SMD
-- Clears stale listeners on the test ports (`SMD_PORT`, `FRU_PORT`, `REDFISH_PORT`) from previous runs
+- Clears stale listeners on the test ports (`SMD_PORT`, `FRU_PORT`, `REDFISH_PORT`, `MAGELLAN_PORT`) from previous runs
 - Builds and starts SMD
 - Builds and starts FRU-tracker
 - Starts a local Redfish mock endpoint
 - Seeds middleware secret credentials
+- Builds and starts the magellan BMC daemon against the same secret store
 - Posts a DiscoverySnapshot to FRU-tracker
 - Starts middleware in write mode
 - Verifies `RedfishEndpoints` and `ComponentEndpoints` in SMD
@@ -82,7 +105,8 @@ Optional environment overrides:
 
 - `SMD_DIR` (default: `/Users/benmcdonald/smd`)
 - `FRU_DIR` (default: `/Users/benmcdonald/fru-tracker`)
-- `SMD_PORT`, `FRU_PORT`, `REDFISH_PORT`
+- `MAGELLAN_DIR` (default: `/Users/benmcdonald/magellan`)
+- `SMD_PORT`, `FRU_PORT`, `REDFISH_PORT`, `MAGELLAN_PORT`
 - `PG_PORT` (if busy, script auto-falls back to a free port)
 - `MASTER_KEY`
 
@@ -94,6 +118,10 @@ Notes:
 ## End-to-End Test (Exact Commands Used)
 
 This section records the exact commands used in a successful FRU -> middleware -> SMD run on 2026-07-23.
+
+> Historical record: this run predates the move to the magellan BMC daemon, so
+> the middleware still queried the Redfish mock directly. Use
+> `./scripts/e2e-test.sh` for the current flow.
 
 ### 1. Start Dependencies
 
