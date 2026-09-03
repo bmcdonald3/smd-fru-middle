@@ -187,13 +187,15 @@ clear_port_listeners "$MAGELLAN_PORT"
 
 # A leftover middleware or magellan from an earlier run will keep polling these
 # ports and write to the SMD this run starts, which produces a passing result
-# that has nothing to do with the code under test.
-stale="$(pgrep -f 'cmd/server|middleware-local|magellan-local|magellan serve' 2>/dev/null || true)"
+# that has nothing to do with the code under test. `go run` executes a child at
+# /tmp/go-build*/exe/server, so the wrapper's command line is not enough to
+# match on.
+stale="$(pgrep -f 'cmd/server|exe/server|middleware-local|magellan-local|magellan serve' 2>/dev/null || true)"
 if [[ -n "$stale" ]]; then
   echo "ERROR: processes from a previous run are still alive:" >&2
   ps -o pid,etimes,cmd -p $(echo "$stale" | tr '\n' ',' | sed 's/,$//') >&2 2>/dev/null || true
-  echo "ERROR: they will contaminate this run. Stop them first:" >&2
-  echo "         pkill -f 'cmd/server'; pkill -f 'middleware-local'; pkill -f 'magellan'" >&2
+  echo "ERROR: they will overwrite this run's SMD data. Stop them first:" >&2
+  echo "         pkill -f 'exe/server'; pkill -f 'cmd/server'; pkill -f 'middleware-local'; pkill -f magellan" >&2
   exit 1
 fi
 
@@ -369,6 +371,18 @@ echo ""
 echo "==> Validating results"
 assert_file_contains "$REDFISH_RESP" "\"ID\":\"$XNAME\"" "RedfishEndpoint registered for $XNAME"
 assert_file_contains "$COMP_RESP" "$XNAME" "ComponentEndpoints created for $XNAME"
+
+# SMD is the only place these MACs live, so losing them between the payload and
+# SMD is a silent boot-breaking failure rather than a cosmetic difference.
+sent_nics="$(grep -o 'system_nics=[0-9]*' "$MIDDLE_LOG" | tail -1 | cut -d= -f2)"
+if [[ -n "$sent_nics" && "$sent_nics" -gt 0 ]]; then
+  for mac in $(grep -o '"mac":"[^"]*"' "$MIDDLE_LOG" | cut -d'"' -f4 | sort -u); do
+    assert_file_contains "$COMP_RESP" "$mac" "MAC $mac reached SMD"
+  done
+  assert_file_contains "$COMP_RESP" "EthernetNICInfo" \
+    "SMD stored NIC info for the $sent_nics NIC(s) the middleware sent"
+  echo "    all $sent_nics sent NIC(s) present in SMD: OK"
+fi
 
 echo ""
 echo "PASS: Real-BMC collection succeeded for $XNAME"
